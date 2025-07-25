@@ -48,16 +48,19 @@ struct my_dev {
 	struct device *device;
 } *temp_dev;
 
+int temp_open (struct inode *, struct file *);
 int temp_open (struct inode *inode, struct file *filp)
 {
 	return 0;
 }
 
+int temp_release (struct inode *, struct file *);
 int temp_release (struct inode *inode, struct file *filp)
 {
 	return 0;
 }
 
+ssize_t temp_read (struct file *, char __user *, size_t,loff_t *);
 ssize_t temp_read (struct file *filp, char __user *buf, size_t count,loff_t *f_pos)
 {
 	int rv=0;
@@ -81,6 +84,7 @@ wrap_up:
 	return rv;
 }
 
+ssize_t temp_write (struct file *, const char __user *, size_t, loff_t *);
 ssize_t temp_write (struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
 	int count1=count, rv=count;
@@ -106,12 +110,14 @@ wrap_up:
 	return rv;
 }
 
+long temp_ioctl (struct file *, unsigned int, unsigned long);
 long temp_ioctl (struct file *filp, unsigned int cmd, unsigned long arg)
 {
 
 	return 0;
 }
 
+loff_t temp_llseek (struct file *, loff_t, int);
 loff_t temp_llseek (struct file *filp, loff_t off, int whence)
 {
         long newpos;
@@ -151,6 +157,7 @@ struct file_operations temp_fops = {
 /**
  * Initialise the module and create the master device
  */
+int __init temp_init_module(void);
 int __init temp_init_module(void){
 	int rv;
 	dev_t devno = MKDEV(major, 0);
@@ -190,25 +197,25 @@ int __init temp_init_module(void){
 		return rv;
 	}
 
-	temp_dev->class = class_create(THIS_MODULE, "temp");
+	temp_dev->class = class_create("temp");
 	if(IS_ERR(temp_dev->class)) {
 		cdev_del(&temp_dev->cdev);
 		unregister_chrdev_region(devno, 1);
 		kfree(temp_dev);
-		printk(KERN_WARNING "%s: can't create udev class\n", "temp");
-		rv = -ENOMEM;
+		rv = PTR_ERR(temp_dev->class);
+		printk(KERN_WARNING "%s: can't create udev class %d\n", "temp", rv);
 		return rv;
 	}
 
 	temp_dev->device = device_create(temp_dev->class, NULL,
-					MKDEV(major, 0), "%s", "temp");
+					devno, NULL, "temp");
 	if(IS_ERR(temp_dev->device)){
 		class_destroy(temp_dev->class);
 		cdev_del(&temp_dev->cdev);
 		unregister_chrdev_region(devno, 1);
 		kfree(temp_dev);
-		printk(KERN_WARNING "%s: can't create udev device\n", "temp");
-		rv = -ENOMEM;
+		rv = PTR_ERR(temp_dev->device);
+		printk(KERN_WARNING "%s: can't create udev device %d\n", "temp", rv);
 		return rv;
 	}
 
@@ -222,6 +229,7 @@ int __init temp_init_module(void){
 /**
  * Finalise the module
  */
+void __exit temp_exit_module(void);
 void __exit temp_exit_module(void){
 	device_destroy(temp_dev->class, MKDEV(major, 0));
 	class_destroy(temp_dev->class);
