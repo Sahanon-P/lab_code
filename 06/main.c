@@ -4,35 +4,47 @@
 #include <linux/uaccess.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
+#include <linux/slab.h>
 
 #define DEVICE_NAME "mycdrv"
 #define CLASS_NAME "my_class"
-#define BUF_SIZE 32
 
 #define MY_IOCTL_MAGIC 'k'
-#define MY_IOCTL_RW _IOWR(MY_IOCTL_MAGIC, 1, char[BUF_SIZE])
+#define MY_IOCTL_RW(cmd_num, len) _IOWR(MY_IOCTL_MAGIC, (cmd_num), char[len])
 
-static char kernel_buf[BUF_SIZE] = "Hello from kernel!";
 static dev_t my_dev;
 static struct class *my_class;
 static struct cdev my_cdev;
 
 static long my_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+    size_t len = _IOC_SIZE(cmd);
+    char *kbuf;
+    int ret = 0;
+
     if (_IOC_TYPE(cmd) != MY_IOCTL_MAGIC)
         return -ENOTTY;
 
-    switch (cmd)
-    {
-    case MY_IOCTL_RW:
-        if (copy_to_user((void __user *)arg, kernel_buf, BUF_SIZE))
-            return -EFAULT;
-        if (copy_from_user(kernel_buf, (void __user *)arg, BUF_SIZE))
-            return -EFAULT;
-        return 0;
-    default:
-        return -ENOTTY;
-    }
+    if (len == 0 || len > 4096) // Arbitrary upper limit for safety
+        return -EINVAL;
+
+    kbuf = kmalloc(len, GFP_KERNEL);
+    if (!kbuf)
+        return -ENOMEM;
+
+    // Fill kernel buffer with a message
+    snprintf(kbuf, len, "Hello from kernel! (len=%zu)", len);
+
+    // Copy kernel buffer to user buffer
+    if (copy_to_user((void __user *)arg, kbuf, len))
+        ret = -EFAULT;
+
+    // Optionally, copy user buffer back to kernel buffer (for demonstration)
+    if (!ret && copy_from_user(kbuf, (void __user *)arg, len))
+        ret = -EFAULT;
+
+    kfree(kbuf);
+    return ret;
 }
 
 static struct file_operations my_fops = {
