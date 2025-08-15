@@ -53,7 +53,7 @@ static int __init my_init(void)
     if (ret < 0)
         goto unregister;
 
-    my_class = class_create(THIS_MODULE, CLASS_NAME);
+    my_class = class_create(CLASS_NAME);
     if (IS_ERR(my_class))
     {
         ret = PTR_ERR(my_class);
