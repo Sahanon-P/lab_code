@@ -121,7 +121,7 @@ static ssize_t ramdisk_read(struct file *filp, char __user *buf, size_t count, l
         page_offset = *offset & (PAGE_SIZE - 1);
         bytes_to_read = min(count, PAGE_SIZE - page_offset);
         
-        page_addr = kmap(page);
+        page_addr = bmap(page);
         if (copy_to_user(buf + bytes_read, page_addr + page_offset, bytes_to_read)) {
             kunmap(page);
             mutex_unlock(&page_mutex);
@@ -157,7 +157,7 @@ static ssize_t ramdisk_write(struct file *filp, const char __user *buf, size_t c
         page_offset = *offset & (PAGE_SIZE - 1);
         bytes_to_write = min(count, PAGE_SIZE - page_offset);
         
-        page_addr = kmap(page);
+        page_addr = bmap(page);
         if (copy_from_user(page_addr + page_offset, buf + bytes_written, bytes_to_write)) {
             kunmap(page);
             mutex_unlock(&page_mutex);
