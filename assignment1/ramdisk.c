@@ -9,6 +9,7 @@
 #include <linux/ioctl.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
+#include <linux/highmem.h>
 
 #define DEVICE_NAME "asgn1"
 #define CLASS_NAME "asgn1_class"
