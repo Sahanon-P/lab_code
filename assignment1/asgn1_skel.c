@@ -156,6 +156,7 @@ ssize_t asgn1_read(struct file *filp, char __user *buf, size_t count,
   size_t size_to_be_read;                 /* size to be read in the current round in
                            while loop */
 
+  struct list_head *ptr = asgn1_device.mem_list.next;
   page_node *curr;
 
   /* check f_pos, if beyond data_size, return 0 */
@@ -266,6 +267,65 @@ static loff_t asgn1_lseek(struct file *file, loff_t offset, int cmd)
 }
 
 /**
+ * Pre-allocate pages efficiently
+ */
+static int allocate_pages_to(int target_pages)
+{
+  page_node *new_node;
+  int i;
+
+  for (i = asgn1_device.num_pages; i < target_pages; i++)
+  {
+    if (asgn1_device.cache)
+    {
+      new_node = kmem_cache_alloc(asgn1_device.cache, GFP_KERNEL);
+    }
+    else
+    {
+      new_node = kmalloc(sizeof(page_node), GFP_KERNEL);
+    }
+
+    if (!new_node)
+      return -ENOMEM;
+
+    new_node->page = alloc_page(GFP_KERNEL);
+    if (!new_node->page)
+    {
+      if (asgn1_device.cache)
+      {
+        kmem_cache_free(asgn1_device.cache, new_node);
+      }
+      else
+      {
+        kfree(new_node);
+      }
+      return -ENOMEM;
+    }
+
+    list_add_tail(&new_node->list, &asgn1_device.mem_list);
+    asgn1_device.num_pages++;
+  }
+  return 0;
+}
+
+/**
+ * Get page by index efficiently
+ */
+static struct page *get_page_by_index(int page_index)
+{
+  page_node *curr;
+  int curr_index = 0;
+
+  list_for_each_entry(curr, &asgn1_device.mem_list, list)
+  {
+    if (curr_index == page_index)
+      return curr->page;
+    curr_index++;
+  }
+  return NULL;
+}
+
+/**
  * This function writes from the user buffer to the virtual disk of this
  * module
  */
@@ -273,147 +333,71 @@ ssize_t asgn1_write(struct file *, const char __user *, size_t, loff_t *);
 ssize_t asgn1_write(struct file *filp, const char __user *buf, size_t count,
                     loff_t *f_pos)
 {
-  size_t orig_f_pos = *f_pos;             /* the original file position */
-  size_t size_written = 0;                /* size written to virtual disk in this function */
-  size_t begin_offset;                    /* the offset from the beginning of a page to
-                           start writing */
-  int begin_page_no = *f_pos / PAGE_SIZE; /* the first page this finction
-               should start writing to */
+  size_t orig_f_pos = *f_pos;
+  size_t size_written = 0;
+  size_t begin_offset;
+  int begin_page_no = *f_pos / PAGE_SIZE;
+  int end_page_no = (*f_pos + count - 1) / PAGE_SIZE;
+  int curr_page_no;
+  size_t curr_size_written;
+  size_t size_to_be_written;
 
-  int curr_page_no = 0;      /* the current page number */
-  size_t curr_size_written;  /* size written to virtual disk in this round */
-  size_t size_to_be_written; /* size to be read in the current round in
-        while loop */
-
-  page_node *curr;
-
-  /* Traverse the list until the first page reached, and add nodes if necessary */
-  while (curr_page_no < begin_page_no)
+  /* Pre-allocate all needed pages at once */
+  if (end_page_no >= asgn1_device.num_pages)
   {
-    /* Check if we need to allocate more pages */
-    if (curr_page_no >= asgn1_device.num_pages)
+    if (allocate_pages_to(end_page_no + 1) < 0)
     {
-      /* Allocate new page node */
-      if (asgn1_device.cache)
-      {
-        curr = kmem_cache_alloc(asgn1_device.cache, GFP_KERNEL);
-      }
-      else
-      {
-        curr = kmalloc(sizeof(page_node), GFP_KERNEL);
-      }
-
-      if (!curr)
-        return -ENOMEM;
-
-      curr->page = alloc_page(GFP_KERNEL);
-      if (!curr->page)
-      {
-        if (asgn1_device.cache)
-        {
-          kmem_cache_free(asgn1_device.cache, curr);
-        }
-        else
-        {
-          kfree(curr);
-        }
-        return -ENOMEM;
-      }
-
-      list_add_tail(&curr->list, &asgn1_device.mem_list);
-      asgn1_device.num_pages++;
+      return -ENOMEM;
     }
-    curr_page_no++;
   }
 
-  /* Now write the data page by page */
-  curr_page_no = 0;
-  list_for_each_entry(curr, &asgn1_device.mem_list, list)
+  /* Now write the data page by page without additional allocations */
+  for (curr_page_no = begin_page_no; curr_page_no <= end_page_no && size_written < count; curr_page_no++)
   {
-    if (curr_page_no >= begin_page_no)
+    struct page *page = get_page_by_index(curr_page_no);
+    void *page_addr;
+
+    if (!page)
+      break;
+
+    /* Calculate offset within page */
+    if (curr_page_no == begin_page_no)
     {
-      void *page_addr;
+      begin_offset = *f_pos % PAGE_SIZE;
+    }
+    else
+    {
+      begin_offset = 0;
+    }
 
-      /* Calculate offset within page */
-      if (curr_page_no == begin_page_no)
+    /* Calculate size to write to this page */
+    size_to_be_written = min(count - size_written, PAGE_SIZE - begin_offset);
+
+    if (size_to_be_written <= 0)
+      break;
+
+    /* Map page and copy from user */
+    page_addr = kmap_local_page(page);
+    curr_size_written = size_to_be_written - copy_from_user(page_addr + begin_offset,
+                                                            buf + size_written,
+                                                            size_to_be_written);
+    kunmap_local(page_addr);
+
+    if (curr_size_written < size_to_be_written)
+    {
+      if (size_written + curr_size_written == 0)
       {
-        begin_offset = *f_pos % PAGE_SIZE;
+        return -EINVAL; /* completely failed */
       }
-      else
-      {
-        begin_offset = 0;
-      }
-
-      /* Calculate size to write to this page */
-      size_to_be_written = min(count - size_written, PAGE_SIZE - begin_offset);
-
-      if (size_to_be_written <= 0)
-        break;
-
-      /* Map page and copy from user */
-      page_addr = kmap_local_page(curr->page);
-      curr_size_written = size_to_be_written - copy_from_user(page_addr + begin_offset,
-                                                              buf + size_written,
-                                                              size_to_be_written);
-      kunmap_local(page_addr);
-
-      if (curr_size_written < size_to_be_written)
-      {
-        if (size_written + curr_size_written == 0)
-        {
-          return -EINVAL; /* completely failed */
-        }
-        size_written += curr_size_written;
-        break; /* partial copy, return what we wrote */
-      }
-
       size_written += curr_size_written;
-
-      /* if we've written everything requested, break */
-      if (size_written >= count)
-        break;
+      break; /* partial copy, return what we wrote */
     }
-    curr_page_no++;
 
-    /* If we need more pages, allocate them */
-    if (curr_page_no >= asgn1_device.num_pages && size_written < count)
-    {
-      page_node *new_node;
-
-      if (asgn1_device.cache)
-      {
-        new_node = kmem_cache_alloc(asgn1_device.cache, GFP_KERNEL);
-      }
-      else
-      {
-        new_node = kmalloc(sizeof(page_node), GFP_KERNEL);
-      }
-
-      if (!new_node)
-        break;
-
-      new_node->page = alloc_page(GFP_KERNEL);
-      if (!new_node->page)
-      {
-        if (asgn1_device.cache)
-        {
-          kmem_cache_free(asgn1_device.cache, new_node);
-        }
-        else
-        {
-          kfree(new_node);
-        }
-        break;
-      }
-
-      list_add_tail(&new_node->list, &asgn1_device.mem_list);
-      asgn1_device.num_pages++;
-    }
+    size_written += curr_size_written;
   }
 
   *f_pos += size_written;
-  asgn1_device.data_size = max(asgn1_device.data_size,
-                               orig_f_pos + size_written);
+  asgn1_device.data_size = max(asgn1_device.data_size, orig_f_pos + size_written);
   return size_written;
 }
 
